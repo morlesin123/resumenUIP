@@ -1969,6 +1969,7 @@ function openTema(num){
         const notes = JSON.parse(localStorage.getItem('uip_notes')||'{}');
         notes[num] = notesArea.value;
         localStorage.setItem('uip_notes', JSON.stringify(notes));
+        if (window.firebaseSync) window.firebaseSync.push('uip_notes', JSON.stringify(notes));
         const ind = document.getElementById('notesSaved');
         if (ind) { ind.classList.add('show'); setTimeout(()=>ind.classList.remove('show'),1500); }
       }, 800);
@@ -1981,6 +1982,7 @@ function changeCount(delta){
   const next=Math.max(0,(counts[currentTema]||0)+delta);
   counts[currentTema]=next;
   localStorage.setItem('uip_basica_counts',JSON.stringify(counts));
+  if(window.firebaseSync) window.firebaseSync.push('uip_basica_counts', JSON.stringify(counts));
   document.getElementById('counterValue').textContent=next;
   renderList();updateProgress();
 }
@@ -2051,6 +2053,7 @@ function saveEdit() {
   var edits = JSON.parse(localStorage.getItem('uip_edits') || '{}');
   edits[currentTema] = content.innerHTML;
   localStorage.setItem('uip_edits', JSON.stringify(edits));
+  if (window.firebaseSync) window.firebaseSync.push('uip_edits', JSON.stringify(edits));
   editMode = false;
   var btn = document.getElementById('editBtn');
   btn.classList.remove('active');
@@ -2068,6 +2071,7 @@ function restoreOriginal() {
   var edits = JSON.parse(localStorage.getItem('uip_edits') || '{}');
   delete edits[currentTema];
   localStorage.setItem('uip_edits', JSON.stringify(edits));
+  if (window.firebaseSync) window.firebaseSync.push('uip_edits', JSON.stringify(edits));
   document.getElementById('resumenContent').innerHTML = '<div class="summary-content">' + RESUMENES[String(currentTema)] + '</div>';
   editMode = false;
   var btn = document.getElementById('editBtn');
@@ -2077,6 +2081,100 @@ function restoreOriginal() {
   document.getElementById('editSavebar').classList.remove('show');
   document.getElementById('modBadge').classList.remove('show');
 }
+
+// ── UI refresh hook, called by the Firebase sync module when remote data changes ──
+window.onFirebaseDataChanged = function(key) {
+  if (key === 'uip_basica_counts') {
+    counts = JSON.parse(localStorage.getItem('uip_basica_counts') || '{}');
+    renderList();
+    updateProgress();
+    if (currentTema) {
+      var cv = document.getElementById('counterValue');
+      if (cv) cv.textContent = counts[currentTema] || 0;
+    }
+  } else if (key === 'uip_edits') {
+    if (currentTema && !editMode && !EXEMPTED.includes(currentTema)) {
+      var editedHTML = (JSON.parse(localStorage.getItem('uip_edits') || '{}') || {})[currentTema];
+      var content = document.getElementById('resumenContent');
+      if (content) {
+        content.innerHTML = '<div class="summary-content">' + (editedHTML || RESUMENES[String(currentTema)]) + '</div>';
+      }
+      var mb = document.getElementById('modBadge');
+      if (mb) mb.classList.toggle('show', !!editedHTML);
+    }
+  } else if (key === 'uip_notes') {
+    if (currentTema) {
+      var notesArea = document.getElementById('notesArea');
+      if (notesArea && document.activeElement !== notesArea) {
+        notesArea.value = (JSON.parse(localStorage.getItem('uip_notes') || '{}') || {})[currentTema] || '';
+      }
+    }
+  }
+};
+</script>
+
+<!-- ── SINCRONIZACIÓN EN TIEMPO REAL (Firebase) ────────────────────────── -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCFctwwpQ4ctxTB0w2u0gy9qIwq6taUi8A",
+  authDomain: "resumenes-uip.firebaseapp.com",
+  databaseURL: "https://resumenes-uip-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "resumenes-uip",
+  storageBucket: "resumenes-uip.firebasestorage.app",
+  messagingSenderId: "998728934292",
+  appId: "1:998728934292:web:e94e141642ace84262a581"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+
+const SYNC_KEYS = ['uip_basica_counts', 'uip_edits', 'uip_notes'];
+const remoteUpdateInProgress = {};
+
+function pushToFirebase(key, value) {
+  set(ref(db, key), value).catch(function(err) {
+    console.error('Error al sincronizar con Firebase:', key, err);
+  });
+}
+
+// Función que el resto de la app llama cada vez que guarda algo en localStorage
+window.firebaseSync = {
+  push: function(key, valueString) {
+    if (SYNC_KEYS.indexOf(key) === -1) return;
+    if (remoteUpdateInProgress[key]) return; // evita bucles al recibir cambios remotos
+    try {
+      pushToFirebase(key, JSON.parse(valueString));
+    } catch (e) {
+      console.error('Error preparando datos para Firebase:', e);
+    }
+  }
+};
+
+// Escucha cambios remotos (cuando cambias algo desde el otro dispositivo)
+SYNC_KEYS.forEach(function(key) {
+  onValue(ref(db, key), function(snapshot) {
+    const val = snapshot.val();
+    const localStr = localStorage.getItem(key);
+
+    if (val === null) {
+      // Todavía no hay nada en Firebase para esta clave: si tenemos datos locales, los subimos
+      if (localStr) pushToFirebase(key, JSON.parse(localStr));
+      return;
+    }
+
+    const newStr = JSON.stringify(val);
+    if (newStr === localStr) return; // sin cambios reales
+
+    remoteUpdateInProgress[key] = true;
+    localStorage.setItem(key, newStr);
+    remoteUpdateInProgress[key] = false;
+
+    if (window.onFirebaseDataChanged) window.onFirebaseDataChanged(key);
+  });
+});
 </script>
 </body>
 </html>
